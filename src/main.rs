@@ -8,13 +8,15 @@ use std::process::{Command, Stdio};
 enum ProjectType {
     Rust,
     Python,
+    Agent,
 }
 
 #[derive(Debug)]
 struct Config {
     repo_name: String,
-    project_type: ProjectType,
+    project_type: Option<ProjectType>,
     private: bool,
+    delete: bool,
 }
 
 impl Config {
@@ -24,6 +26,7 @@ impl Config {
         let mut repo_name = None;
         let mut project_type = None;
         let mut private = true;
+        let mut delete = false;
 
         let mut i = 1;
         while i < args.len() {
@@ -42,7 +45,8 @@ impl Config {
                         match args[i].to_lowercase().as_str() {
                             "rust" => project_type = Some(ProjectType::Rust),
                             "python" => project_type = Some(ProjectType::Python),
-                            other => return Err(format!("不正なプロジェクト種別 '{}' です。(rust または python を指定してください)", other)),
+                            "agent" => project_type = Some(ProjectType::Agent),
+                            other => return Err(format!("不正なプロジェクト種別 '{}' です。(rust、python、agent のいずれかを指定してください)", other)),
                         }
                     } else {
                         return Err("--project-type の値が指定されていません。".into());
@@ -60,6 +64,7 @@ impl Config {
                         return Err("--private の値が指定されていません。".into());
                     }
                 }
+                "-d" | "--delete" => delete = true,
                 "-h" | "--help" => {
                     Self::print_help(&args[0]);
                     std::process::exit(0);
@@ -70,12 +75,15 @@ impl Config {
         }
 
         let repo_name = repo_name.ok_or("リポジトリ名が指定されていません。(-r <NAME> または --repo-name <NAME>)")?;
-        let project_type = project_type.ok_or("プロジェクト種別が指定されていません。(-p <rust|python> または --project-type <rust|python>)")?;
+        if !delete && project_type.is_none() {
+            return Err("プロジェクト種別が指定されていません。(-p <rust|python|agent> または --project-type <rust|python|agent>)".into());
+        }
 
         Ok(Config {
             repo_name,
             project_type,
             private,
+            delete,
         })
     }
 
@@ -84,8 +92,15 @@ impl Config {
         println!();
         println!("オプション:");
         println!("  -r, --repo-name <NAME>      GitHubリポジトリ / プロジェクト名 (必須)");
-        println!("  -p, --project-type <TYPE>   プロジェクト種別: rust または python (必須)");
-        println!("      --private <BOOL>        プライベートリポジトリにするか (デフォルト: true)");
+        println!(
+            "  -p, --project-type <TYPE>   プロジェクト種別: rust / python / agent (作成時に必須)"
+        );
+        println!(
+            "      --private <BOOL>        プライベートリポジトリにするか (作成時のデフォルト: true)"
+        );
+        println!(
+            "  -d, --delete                GitHubリポジトリを削除する (プロジェクト種別は不要)"
+        );
         println!("  -h, --help                  ヘルプの表示");
     }
 }
@@ -104,6 +119,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("0. GitHub CLI (gh) の認証確認中...");
     check_or_run_gh_auth()?;
 
+    if config.delete {
+        println!(
+            "GitHubリポジトリ '{}' の削除を開始します...",
+            config.repo_name
+        );
+        delete_github_repo(&config.repo_name)?;
+        println!("GitHubリポジトリ '{}' を削除しました。", config.repo_name);
+        return Ok(());
+    }
+
     // 1. プロジェクトディレクトリの作成
     let local_dir = PathBuf::from(&config.repo_name);
     if local_dir.exists() {
@@ -114,14 +139,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. テンプレート展開
     match config.project_type {
-        ProjectType::Rust => {
+        Some(ProjectType::Rust) => {
             println!("2. Rustプロジェクトを初期化中 (cargo init)...");
             init_rust_project(&local_dir, &config.repo_name)?;
         }
-        ProjectType::Python => {
+        Some(ProjectType::Python) => {
             println!("2. Pythonプロジェクトを初期化中...");
             init_python_project(&local_dir, &config.repo_name)?;
         }
+        Some(ProjectType::Agent) => {
+            println!("2. スキル・エージェント・ループ用のひな形を作成中...");
+            init_agent_project(&local_dir, &config.repo_name)?;
+        }
+        None => unreachable!("project type is required when creating a repository"),
     }
 
     // 3. ローカルGit初期化・ブランチ名 main 化・初期コミット
@@ -233,6 +263,73 @@ dependencies = []
     Ok(())
 }
 
+fn init_agent_project(dir: &Path, repo_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let agents_dir = dir.join(".github/agents");
+    let skill_dir = dir.join(".github/skills/example-skill");
+    let loops_dir = dir.join(".github/loops");
+    fs::create_dir_all(&agents_dir)?;
+    fs::create_dir_all(&skill_dir)?;
+    fs::create_dir_all(&loops_dir)?;
+
+    let readme = format!(
+        r#"# {repo_name}
+
+スキル、エージェント、作業ループを管理するリポジトリです。
+
+## ディレクトリ構成
+
+- `.github/agents/`: エージェント定義 (`*.agent.md`)
+- `.github/skills/`: スキル定義 (`<skill-name>/SKILL.md`)
+- `.github/loops/`: 繰り返し実行する作業手順・ループの定義
+
+各サンプルを編集し、用途に合わせて追加してください。
+"#
+    );
+    File::create(dir.join("README.md"))?.write_all(readme.as_bytes())?;
+
+    let agent = r#"---
+name: example-agent
+description: このエージェントを使う場面を説明してください。
+---
+
+# Example agent
+
+このエージェントが担当する役割と、守るべき指示を記載してください。
+"#;
+    File::create(agents_dir.join("example.agent.md"))?.write_all(agent.as_bytes())?;
+
+    let skill = r#"---
+name: example-skill
+description: このスキルを使う作業と適用条件を説明してください。
+---
+
+# Example skill
+
+このスキルを実行するための手順や判断基準を記載してください。
+"#;
+    File::create(skill_dir.join("SKILL.md"))?.write_all(skill.as_bytes())?;
+
+    let loop_definition = r#"# Example loop
+
+## Goal
+
+このループで達成する目標を記載してください。
+
+## Steps
+
+1. 現在の状態を確認する。
+2. 目標に近づくための作業を1つ実行する。
+3. 結果を検証し、未達なら次の反復に進む。
+
+## Stop condition
+
+完了と判断する条件、または継続を中止する条件を記載してください。
+"#;
+    File::create(loops_dir.join("example.md"))?.write_all(loop_definition.as_bytes())?;
+
+    Ok(())
+}
+
 fn setup_local_git(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     run_cmd(dir, "git", &["init"])?;
     run_cmd(dir, "git", &["branch", "-m", "main"])?;
@@ -265,6 +362,20 @@ fn create_and_push_github(
     Ok(())
 }
 
+fn delete_github_repo(repo_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let status = Command::new("gh")
+        .args(["repo", "delete", repo_name])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+
+    if !status.success() {
+        return Err(format!("GitHubリポジトリ '{}' の削除に失敗しました。", repo_name).into());
+    }
+    Ok(())
+}
+
 fn run_cmd(dir: &Path, prog: &str, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
     let status = Command::new(prog)
         .current_dir(dir)
@@ -275,4 +386,35 @@ fn run_cmd(dir: &Path, prog: &str, args: &[&str]) -> Result<(), Box<dyn std::err
         return Err(format!("コマンド '{} {:?}' の実行に失敗しました。", prog, args).into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::init_agent_project;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn creates_agent_skill_and_loop_scaffold() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after UNIX epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "gh-repo-automator-agent-scaffold-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&dir).expect("temporary test directory should be created");
+
+        init_agent_project(&dir, "sample-repo").expect("agent scaffold should be created");
+
+        assert!(dir.join("README.md").is_file());
+        assert!(dir.join(".github/agents/example.agent.md").is_file());
+        assert!(dir.join(".github/skills/example-skill/SKILL.md").is_file());
+        assert!(dir.join(".github/loops/example.md").is_file());
+        let readme = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(readme.contains("# sample-repo"));
+
+        fs::remove_dir_all(dir).expect("temporary test directory should be removed");
+    }
 }

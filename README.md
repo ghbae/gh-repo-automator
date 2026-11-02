@@ -1,6 +1,6 @@
 # gh-repo-automator
 
-ローカル環境にプロジェクト（Rust または Python）の基本テンプレートを生成し、初期コミットの作成から GitHub リモートリポジトリの作成・プッシュまでを一括自動化する CLI ツールです。
+ローカル環境にプロジェクト（Rust、Python、またはスキル・エージェント・ループ管理用）の基本テンプレートを生成し、初期コミットの作成から GitHub リモートリポジトリの作成・プッシュまでを一括自動化する CLI ツールです。
 
 ---
 
@@ -12,9 +12,10 @@
 
 - **自動認証対応**: GitHub CLI (`gh`) が未認証の場合、その場で自動的に対話型ログイン画面（ブラウザ／ワンタイムコード認証）を起動
 - カレントディレクトリ直下に指定したプロジェクト名（リポジトリ名）のディレクトリを作成
-- 指定した言語（Rust または Python）の標準的なプロジェクト雛形を配置
+- 指定した種別（Rust、Python、またはスキル・エージェント・ループ管理用）の標準的な雛形を配置
 - ローカル Git リポジトリを初期化し、デフォルトブランチを `main` に設定して初期コミットを作成
 - GitHub 上に指定した名前でリモートリポジトリを作成し、ローカルの `main` ブランチを自動プッシュ
+- オプションで GitHub リポジトリを削除（`gh` の確認プロンプトを表示。ローカルのファイルは削除しません）
 
 ---
 
@@ -30,15 +31,23 @@
 
 ## インストール方法
 
-### コマンドとして登録する場合（推奨）
-プロジェクトのルートディレクトリで以下を実行します。
+### インストーラーで登録する場合（推奨）
+リポジトリのルートディレクトリで以下を実行します。
 
 ```bash
-cargo install --path .
+./install.sh
+```
+
+スクリプトが `cargo install --path . --force` を実行し、実行ファイルを `~/.cargo/bin/gh-repo-automator` に配置します。`CARGO_HOME` を設定している場合は、その `bin` ディレクトリがインストール先です。必要に応じて、表示された案内に従って `bin` を `PATH` に追加してください。
+
+インストーラーを使わずに直接登録する場合:
+
+```bash
+cargo install --path . --force
 
 ```
 
-`~/.cargo/bin` に実行ファイルが配置され、以降は `gh-repo-automator` コマンドとして直接利用可能になります。
+以降は `gh-repo-automator` コマンドとして実行できます。
 
 ### リリースバイナリを直接ビルドする場合
 
@@ -58,8 +67,9 @@ cargo build --release
 | オプション | 必須 | デフォルト値 | 説明 |
 | --- | --- | --- | --- |
 | `-r`, `--repo-name <NAME>` | **必須** | - | GitHub 上のリポジトリ名およびローカルのプロジェクトフォルダ名 |
-| `-p`, `--project-type <TYPE>` | **必須** | - | プロジェクト種別 (`rust` または `python`) |
-| `--private <BOOL>` | 任意 | `true` | プライベートリポジトリにするか (`true` / `false`) |
+| `-p`, `--project-type <TYPE>` | 作成時に必須 | - | プロジェクト種別 (`rust`、`python`、`agent`) |
+| `--private <BOOL>` | 任意（作成時のみ） | `true` | プライベートリポジトリにするか (`true` / `false`) |
+| `-d`, `--delete` | 任意 | - | 指定した GitHub リポジトリを削除（`--repo-name` は必須。プロジェクト種別は不要） |
 | `-h`, `--help` | 任意 | - | ヘルプメッセージの表示 |
 
 ### 実行例
@@ -100,6 +110,22 @@ gh-repo-automator -r my-python-app -p python --private false
 
 ※ 未ログイン状態で実行した場合、ターミナル上で GitHub CLI のログイン選択画面（ブラウザ／認証コード）が表示されます。認証完了後、そのまま後続の処理が継続します。
 
+#### 3. スキル・エージェント・ループ用リポジトリを作成してプッシュ
+
+```bash
+gh-repo-automator -r my-agent-docs -p agent
+```
+
+`.github/agents/` にエージェント定義、`.github/skills/` にスキル定義、`.github/loops/` に作業ループのサンプルを生成します。
+
+#### GitHub リポジトリの削除
+
+```bash
+gh-repo-automator --delete --repo-name OWNER/REPO
+```
+
+`OWNER/REPO` の代わりに、現在の GitHub ホストで解決できるリポジトリ名も指定できます。削除前に GitHub CLI の確認プロンプトが表示されます。GitHub 上のリポジトリのみを削除し、同名のローカルディレクトリはそのまま残します。
+
 ---
 
 # 2. 開発者向けガイド
@@ -134,7 +160,8 @@ gh-repo-automator -r my-python-app -p python --private false
        ▼
 [2. テンプレート展開]
        ├─ Rust: cargo init --name <repo_name> + README.md
-       └─ Python: pyproject.toml, package/__init__.py, package/main.py, .gitignore, README.md
+       ├─ Python: pyproject.toml, package/__init__.py, package/main.py, .gitignore, README.md
+       └─ Agent: .github/agents/, .github/skills/, .github/loops/, README.md
        │
        ▼
 [3. ローカル Git 初期化]
@@ -156,6 +183,7 @@ gh-repo-automator -r my-python-app -p python --private false
 * `Config::parse()`: `std::env::args` を順次読み取り、バリデーションと構造体マッピングを実施。
 * `init_rust_project(dir, repo_name)`: カレントディレクトリを `./{repo_name}` に切り替えて `cargo init` を発行。
 * `init_python_project(dir, repo_name)`: `pyproject.toml` やパッケージモジュール等を直接ファイル書き込みで構成。
+* `init_agent_project(dir, repo_name)`: `.github/agents/`、`.github/skills/`、`.github/loops/` に編集用サンプルを作成。
 * `setup_local_git(dir)`: `git init` 後、`git branch -m main` を実行してブランチ名を `main` に統一した上で初期コミットを作成。
 * `create_and_push_github(dir, repo_name, is_private)`: `gh repo create` の `--source` と `--push` フラグを組み合わせてリモート反映を一括実行。
 
