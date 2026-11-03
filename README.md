@@ -225,8 +225,4 @@ cargo build --release
 
 ## ライセンス
 
-MIT License
-
-```
-
-```
+MIT License — 詳細は [LICENSE](./LICENSE) を参照してください。
