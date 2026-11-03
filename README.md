@@ -16,6 +16,7 @@
 - ローカル Git リポジトリを初期化し、デフォルトブランチを `main` に設定して初期コミットを作成
 - GitHub 上に指定した名前でリモートリポジトリを作成し、ローカルの `main` ブランチを自動プッシュ
 - オプションで GitHub リポジトリを削除（`gh` の確認プロンプトを表示。ローカルのファイルは削除しません）
+- オプションで GitHub リポジトリの一覧を表示（Private / Public を判別）
 
 ---
 
@@ -66,10 +67,11 @@ cargo build --release
 
 | オプション | 必須 | デフォルト値 | 説明 |
 | --- | --- | --- | --- |
-| `-r`, `--repo-name <NAME>` | **必須** | - | GitHub 上のリポジトリ名およびローカルのプロジェクトフォルダ名 |
+| `-r`, `--repo-name <NAME>` | 作成・削除時に必須 | - | GitHub 上のリポジトリ名およびローカルのプロジェクトフォルダ名 |
 | `-p`, `--project-type <TYPE>` | 作成時に必須 | - | プロジェクト種別 (`rust`、`python`、`agent`) |
 | `--private <BOOL>` | 任意（作成時のみ） | `true` | プライベートリポジトリにするか (`true` / `false`) |
 | `-d`, `--delete` | 任意 | - | 指定した GitHub リポジトリを削除（`--repo-name` は必須。プロジェクト種別は不要） |
+| `-l`, `--list` | 任意 | - | GitHub リポジトリの一覧を表示（Private / Public を判別。他のオプションは不要） |
 | `-h`, `--help` | 任意 | - | ヘルプメッセージの表示 |
 
 ### 実行例
@@ -125,6 +127,23 @@ gh-repo-automator --delete --repo-name OWNER/REPO
 ```
 
 `OWNER/REPO` の代わりに、現在の GitHub ホストで解決できるリポジトリ名も指定できます。削除前に GitHub CLI の確認プロンプトが表示されます。GitHub 上のリポジトリのみを削除し、同名のローカルディレクトリはそのまま残します。
+
+#### GitHub リポジトリの一覧表示
+
+```bash
+gh-repo-automator --list
+```
+
+認証中のアカウントのリポジトリを最大 1000 件取得し、各リポジトリの可視性（`Private` / `Public` / `Internal`）を併せて表示します。
+
+```text
+REPOSITORY                 VISIBILITY
+-------------------------  ----------
+your-account/my-rust-app   Private
+your-account/my-oss-tool   Public
+
+合計: 2 件
+```
 
 ---
 
@@ -186,6 +205,7 @@ gh-repo-automator --delete --repo-name OWNER/REPO
 * `init_agent_project(dir, repo_name)`: `.github/agents/`、`.github/skills/`、`.github/loops/` に編集用サンプルを作成。
 * `setup_local_git(dir)`: `git init` 後、`git branch -m main` を実行してブランチ名を `main` に統一した上で初期コミットを作成。
 * `create_and_push_github(dir, repo_name, is_private)`: `gh repo create` の `--source` と `--push` フラグを組み合わせてリモート反映を一括実行。
+* `list_github_repos()`: `gh repo list --json nameWithOwner,visibility` で一覧を取得し、Private / Public / Internal を判別して整形表示。
 
 ---
 

@@ -13,10 +13,11 @@ enum ProjectType {
 
 #[derive(Debug)]
 struct Config {
-    repo_name: String,
+    repo_name: Option<String>,
     project_type: Option<ProjectType>,
     private: bool,
     delete: bool,
+    list: bool,
 }
 
 impl Config {
@@ -27,6 +28,7 @@ impl Config {
         let mut project_type = None;
         let mut private = true;
         let mut delete = false;
+        let mut list = false;
 
         let mut i = 1;
         while i < args.len() {
@@ -65,6 +67,7 @@ impl Config {
                     }
                 }
                 "-d" | "--delete" => delete = true,
+                "-l" | "--list" => list = true,
                 "-h" | "--help" => {
                     Self::print_help(&args[0]);
                     std::process::exit(0);
@@ -74,9 +77,13 @@ impl Config {
             i += 1;
         }
 
-        let repo_name = repo_name.ok_or("リポジトリ名が指定されていません。(-r <NAME> または --repo-name <NAME>)")?;
-        if !delete && project_type.is_none() {
-            return Err("プロジェクト種別が指定されていません。(-p <rust|python|agent> または --project-type <rust|python|agent>)".into());
+        if !list {
+            if repo_name.is_none() {
+                return Err("リポジトリ名が指定されていません。(-r <NAME> または --repo-name <NAME>)".into());
+            }
+            if !delete && project_type.is_none() {
+                return Err("プロジェクト種別が指定されていません。(-p <rust|python|agent> または --project-type <rust|python|agent>)".into());
+            }
         }
 
         Ok(Config {
@@ -84,6 +91,7 @@ impl Config {
             project_type,
             private,
             delete,
+            list,
         })
     }
 
@@ -100,6 +108,9 @@ impl Config {
         );
         println!(
             "  -d, --delete                GitHubリポジトリを削除する (プロジェクト種別は不要)"
+        );
+        println!(
+            "  -l, --list                  GitHubリポジトリの一覧を表示する (Private/Public判別付き)"
         );
         println!("  -h, --help                  ヘルプの表示");
     }
@@ -119,20 +130,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("0. GitHub CLI (gh) の認証確認中...");
     check_or_run_gh_auth()?;
 
-    if config.delete {
-        println!(
-            "GitHubリポジトリ '{}' の削除を開始します...",
-            config.repo_name
-        );
-        delete_github_repo(&config.repo_name)?;
-        println!("GitHubリポジトリ '{}' を削除しました。", config.repo_name);
+    if config.list {
+        println!("GitHubリポジトリの一覧を取得します...");
+        list_github_repos()?;
         return Ok(());
     }
 
+    if config.delete {
+        let repo_name = config.repo_name.as_deref().expect("repo name is required when deleting");
+        println!(
+            "GitHubリポジトリ '{}' の削除を開始します...",
+            repo_name
+        );
+        delete_github_repo(repo_name)?;
+        println!("GitHubリポジトリ '{}' を削除しました。", repo_name);
+        return Ok(());
+    }
+
+    let repo_name = config.repo_name.as_deref().expect("repo name is required when creating");
+
     // 1. プロジェクトディレクトリの作成
-    let local_dir = PathBuf::from(&config.repo_name);
+    let local_dir = PathBuf::from(repo_name);
     if local_dir.exists() {
-        return Err(format!("カレントディレクトリに '{}' ディレクトリが既に存在します。", config.repo_name).into());
+        return Err(format!("カレントディレクトリに '{}' ディレクトリが既に存在します。", repo_name).into());
     }
     fs::create_dir_all(&local_dir)?;
     println!("1. プロジェクトディレクトリを作成しました: {}", local_dir.display());
@@ -141,15 +161,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match config.project_type {
         Some(ProjectType::Rust) => {
             println!("2. Rustプロジェクトを初期化中 (cargo init)...");
-            init_rust_project(&local_dir, &config.repo_name)?;
+            init_rust_project(&local_dir, repo_name)?;
         }
         Some(ProjectType::Python) => {
             println!("2. Pythonプロジェクトを初期化中...");
-            init_python_project(&local_dir, &config.repo_name)?;
+            init_python_project(&local_dir, repo_name)?;
         }
         Some(ProjectType::Agent) => {
             println!("2. スキル・エージェント・ループ用のひな形を作成中...");
-            init_agent_project(&local_dir, &config.repo_name)?;
+            init_agent_project(&local_dir, repo_name)?;
         }
         None => unreachable!("project type is required when creating a repository"),
     }
@@ -159,12 +179,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_local_git(&local_dir)?;
 
     // 4. GitHubリポジトリ作成・プッシュ
-    println!("4. GitHubリポジトリ '{}' を作成してプッシュ中...", config.repo_name);
-    create_and_push_github(&local_dir, &config.repo_name, config.private)?;
+    println!("4. GitHubリポジトリ '{}' を作成してプッシュ中...", repo_name);
+    create_and_push_github(&local_dir, repo_name, config.private)?;
 
     println!("\nすべて完了しました。");
     println!("- ローカル: {}", local_dir.canonicalize()?.display());
-    println!("- リモート: https://github.com/<your-account>/{}", config.repo_name);
+    println!("- リモート: https://github.com/<your-account>/{}", repo_name);
 
     Ok(())
 }
@@ -373,6 +393,62 @@ fn delete_github_repo(repo_name: &str) -> Result<(), Box<dyn std::error::Error>>
     if !status.success() {
         return Err(format!("GitHubリポジトリ '{}' の削除に失敗しました。", repo_name).into());
     }
+    Ok(())
+}
+
+/// gh repo list でリポジトリ一覧を取得し、Private/Public を判別して表示する
+fn list_github_repos() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new("gh")
+        .args([
+            "repo",
+            "list",
+            "--limit",
+            "1000",
+            "--json",
+            "nameWithOwner,visibility",
+            "--jq",
+            r#".[] | "\(.nameWithOwner)\t\(.visibility)""#,
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("リポジトリ一覧の取得に失敗しました: {}", stderr.trim()).into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let repos: Vec<(&str, &str)> = stdout
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .collect();
+
+    if repos.is_empty() {
+        println!("リポジトリが見つかりませんでした。");
+        return Ok(());
+    }
+
+    let name_width = repos
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    println!();
+    println!("{:<name_width$}  VISIBILITY", "REPOSITORY");
+    println!("{}  {}", "-".repeat(name_width), "-".repeat(10));
+    for (name, visibility) in &repos {
+        let upper = visibility.to_uppercase();
+        let label = match upper.as_str() {
+            "PRIVATE" => "Private",
+            "PUBLIC" => "Public",
+            "INTERNAL" => "Internal",
+            other => other,
+        };
+        println!("{:<name_width$}  {}", name, label);
+    }
+    println!();
+    println!("合計: {} 件", repos.len());
+
     Ok(())
 }
 
