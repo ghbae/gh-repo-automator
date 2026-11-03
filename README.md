@@ -17,6 +17,7 @@
 - GitHub 上に指定した名前でリモートリポジトリを作成し、ローカルの `main` ブランチを自動プッシュ
 - オプションで GitHub リポジトリを削除（`gh` の確認プロンプトを表示。ローカルのファイルは削除しません）
 - オプションで GitHub リポジトリの一覧を表示（Private / Public を判別）
+- オプションで既存 GitHub リポジトリの公開/非公開（可視性）を変更
 
 ---
 
@@ -72,6 +73,7 @@ cargo build --release
 | `--private <BOOL>` | 任意（作成時のみ） | `true` | プライベートリポジトリにするか (`true` / `false`) |
 | `-d`, `--delete` | 任意 | - | 指定した GitHub リポジトリを削除（`--repo-name` は必須。プロジェクト種別は不要） |
 | `-l`, `--list` | 任意 | - | GitHub リポジトリの一覧を表示（Private / Public を判別。他のオプションは不要） |
+| `-v`, `--visibility <VIS>` | 任意 | - | 既存リポジトリの可視性を変更（`public` / `private`。`--repo-name` は必須） |
 | `-h`, `--help` | 任意 | - | ヘルプメッセージの表示 |
 
 ### 実行例
@@ -145,6 +147,18 @@ your-account/my-oss-tool   Public
 合計: 2 件
 ```
 
+#### 既存リポジトリの公開/非公開の変更
+
+```bash
+# 公開 (Public) に変更
+gh-repo-automator -r my-rust-app -v public
+
+# 非公開 (Private) に変更
+gh-repo-automator -r OWNER/my-rust-app -v private
+```
+
+`OWNER/` を省略した場合は、認証中の GitHub ユーザーのリポジトリとして自動補完されます。なお、公開リポジトリを非公開に変更すると、スター数とウォッチャーは失われます。
+
 ---
 
 # 2. 開発者向けガイド
@@ -206,6 +220,7 @@ your-account/my-oss-tool   Public
 * `setup_local_git(dir)`: `git init` 後、`git branch -m main` を実行してブランチ名を `main` に統一した上で初期コミットを作成。
 * `create_and_push_github(dir, repo_name, is_private)`: `gh repo create` の `--source` と `--push` フラグを組み合わせてリモート反映を一括実行。
 * `list_github_repos()`: `gh repo list --json nameWithOwner,visibility` で一覧を取得し、Private / Public / Internal を判別して整形表示。
+* `change_repo_visibility(repo_name, visibility)`: `gh repo edit <OWNER/REPO> --visibility <public|private>` で既存リポジトリの可視性を変更。`OWNER` 省略時は `current_gh_login()`（`gh api user`）で認証中ユーザー名を補完。
 
 ---
 

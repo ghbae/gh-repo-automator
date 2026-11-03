@@ -18,6 +18,7 @@ struct Config {
     private: bool,
     delete: bool,
     list: bool,
+    visibility: Option<String>,
 }
 
 impl Config {
@@ -29,6 +30,7 @@ impl Config {
         let mut private = true;
         let mut delete = false;
         let mut list = false;
+        let mut visibility = None;
 
         let mut i = 1;
         while i < args.len() {
@@ -68,6 +70,17 @@ impl Config {
                 }
                 "-d" | "--delete" => delete = true,
                 "-l" | "--list" => list = true,
+                "-v" | "--visibility" => {
+                    i += 1;
+                    if i < args.len() {
+                        match args[i].to_lowercase().as_str() {
+                            v @ ("public" | "private") => visibility = Some(v.to_string()),
+                            other => return Err(format!("不正な可視性 '{}' です。(public または private を指定してください)", other)),
+                        }
+                    } else {
+                        return Err("--visibility の値が指定されていません。".into());
+                    }
+                }
                 "-h" | "--help" => {
                     Self::print_help(&args[0]);
                     std::process::exit(0);
@@ -81,7 +94,7 @@ impl Config {
             if repo_name.is_none() {
                 return Err("リポジトリ名が指定されていません。(-r <NAME> または --repo-name <NAME>)".into());
             }
-            if !delete && project_type.is_none() {
+            if !delete && visibility.is_none() && project_type.is_none() {
                 return Err("プロジェクト種別が指定されていません。(-p <rust|python|agent> または --project-type <rust|python|agent>)".into());
             }
         }
@@ -92,6 +105,7 @@ impl Config {
             private,
             delete,
             list,
+            visibility,
         })
     }
 
@@ -111,6 +125,9 @@ impl Config {
         );
         println!(
             "  -l, --list                  GitHubリポジトリの一覧を表示する (Private/Public判別付き)"
+        );
+        println!(
+            "  -v, --visibility <VIS>      既存リポジトリの可視性を変更する: public / private (--repo-name と併用)"
         );
         println!("  -h, --help                  ヘルプの表示");
     }
@@ -144,6 +161,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         delete_github_repo(repo_name)?;
         println!("GitHubリポジトリ '{}' を削除しました。", repo_name);
+        return Ok(());
+    }
+
+    if let Some(visibility) = &config.visibility {
+        let repo_name = config
+            .repo_name
+            .as_deref()
+            .expect("repo name is required when changing visibility");
+        println!(
+            "GitHubリポジトリ '{}' の可視性を '{}' に変更します...",
+            repo_name, visibility
+        );
+        change_repo_visibility(repo_name, visibility)?;
+        println!(
+            "GitHubリポジトリ '{}' を {} に変更しました。",
+            repo_name,
+            if visibility == "private" { "非公開 (Private)" } else { "公開 (Public)" }
+        );
         return Ok(());
     }
 
@@ -394,6 +429,53 @@ fn delete_github_repo(repo_name: &str) -> Result<(), Box<dyn std::error::Error>>
         return Err(format!("GitHubリポジトリ '{}' の削除に失敗しました。", repo_name).into());
     }
     Ok(())
+}
+
+/// gh repo edit で既存リポジトリの可視性 (public/private) を変更する
+fn change_repo_visibility(
+    repo_name: &str,
+    visibility: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if visibility == "private" {
+        println!("   注意: 非公開化するとスター数とウォッチャーは失われます。");
+    }
+
+    // gh repo edit は OWNER/REPO 形式が必須のため、OWNER 省略時は認証中ユーザーで補完する
+    let full_name = if repo_name.contains('/') {
+        repo_name.to_string()
+    } else {
+        let owner = current_gh_login()?;
+        format!("{}/{}", owner, repo_name)
+    };
+
+    let output = Command::new("gh")
+        .args(["repo", "edit", &full_name, "--visibility", visibility])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "リポジトリ '{}' の可視性変更に失敗しました: {}",
+            full_name,
+            stderr.trim()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// 認証中の GitHub ユーザー名 (login) を取得する
+fn current_gh_login() -> Result<String, Box<dyn std::error::Error>> {
+    let output = Command::new("gh")
+        .args(["api", "user", "--jq", ".login"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("GitHubユーザー名の取得に失敗しました: {}", stderr.trim()).into());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// gh repo list でリポジトリ一覧を取得し、Private/Public を判別して表示する
