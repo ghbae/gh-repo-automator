@@ -68,7 +68,7 @@ cargo build --release
 
 | オプション | 必須 | デフォルト値 | 説明 |
 | --- | --- | --- | --- |
-| `-r`, `--repo-name <NAME>` | 作成・削除時に必須 | - | GitHub 上のリポジトリ名およびローカルのプロジェクトフォルダ名。`local` 指定時にも必須 |
+| `-r`, `--repo-name <NAME>` | 作成・削除時に必須 | - | GitHub 上のリポジトリ名およびローカルのプロジェクトフォルダ名。`.` でカレントディレクトリの操作が可能 |
 | `-p`, `--project-type <TYPE>` | 作成時に必須 | - | プロジェクト種別 (`rust`、`python`、`agent`)。`local` 指定時にも必須 |
 | `--private <BOOL>` | 任意（作成時のみ） | `true` | プライベートリポジトリにするか (`true` / `false`) |
 | `-d`, `--delete` | 任意 | - | 指定した GitHub リポジトリを削除（`--repo-name` は必須。プロジェクト種別は不要） |
@@ -179,8 +179,29 @@ gh-repo-automator --repo-name my-local-app --project-type rust --visibility loca
 
 ```bash
 cd my-local-app
-gh-repo-automator --repo-name my-private-app --visibility private
+gh-repo-automator --repo-name . --visibility private
 ```
+
+#### カレントディレクトリ・リポジトリを指定する
+
+`-r .` は次の操作に使用できます。
+
+```bash
+# カレントディレクトリにテンプレートを配置してGitリポジトリを初期化
+gh-repo-automator -r . -p python -v local
+
+# 現在のローカルGitリポジトリを非公開でアップロード、
+# または既存のGitHubリポジトリを非公開化
+gh-repo-automator -r . -v private
+
+# origin が指すGitHubリポジトリを公開化、または削除
+gh-repo-automator -r . -v public
+gh-repo-automator -r . --delete
+```
+
+`-v local` はカレントディレクトリ名をプロジェクト名として使用します。既存のGitリポジトリ内では実行できず、テンプレートの生成先が既に存在する場合は上書きせずに中止します。それ以外の既存ファイルは初期コミットに含まれます。実行したシェルのカレントディレクトリは変更されません。
+
+Gitリポジトリのサブディレクトリでも既存リポジトリの操作が可能です。`origin` がある場合、GitHub上の対象はそのURLの `OWNER/REPO` から決定します。`-v private` で `origin` がない場合は、Gitリポジトリのルートフォルダ名を使い、認証中ユーザーの非公開リポジトリを作成してコミット済みの内容をプッシュします。未コミットの変更はプッシュされません。`public` と `--delete` にはGitHubの `origin` が必要です。GitHub以外または判定できないURLはエラーになります。
 
 #### TAB 補完の有効化
 
@@ -194,7 +215,7 @@ source <(gh-repo-automator --completion bash)
 source <(gh-repo-automator --completion zsh)
 ```
 
-`-r` / `--repo-name` の後では、`gh repo list` から取得した自分のリポジトリ名が動的に補完されます。`-p`（`rust` / `python` / `agent`）、`-v`（`public` / `private`）、`--private`（`true` / `false`）の値も補完対象です。
+`-r` / `--repo-name` の後では、`.` と `gh repo list` から取得した自分のリポジトリ名が補完されます。`-p`（`rust` / `python` / `agent`）、`-v`（`public` / `private` / `local`）、`--private`（`true` / `false`）の値も補完対象です。
 
 ---
 
@@ -229,7 +250,7 @@ source <(gh-repo-automator --completion zsh)
        │
        ▼
 [2. テンプレート展開]
-       ├─ Rust: cargo init --name <repo_name> + README.md
+       ├─ Rust: cargo init --vcs none --name <repo_name> + .gitignore + README.md
        ├─ Python: pyproject.toml, package/__init__.py, package/main.py, .gitignore, README.md
        └─ Agent: .github/agents/, .github/skills/, .github/loops/, README.md
        │
@@ -238,7 +259,7 @@ source <(gh-repo-automator --completion zsh)
        ├─ git init
        ├─ git branch -m main (ブランチ名を明示的に main 化)
        ├─ git add .
-       └─ git commit -m "feat: initial commit"
+       └─ git commit --allow-empty -m "feat: initial commit"
        │
        ▼
 [4. リモート作成 & プッシュ] ─── gh repo create <repo_name> [--private|--public] --source=. --remote=origin --push
@@ -251,7 +272,7 @@ source <(gh-repo-automator --completion zsh)
 
 * `check_or_run_gh_auth()`: `gh auth status` を実行。ステータスが非0の場合は `gh auth login` を起動し、端末の標準入出力を渡してOAuth認証を対話的に完了させる。
 * `Config::parse()`: `std::env::args` を順次読み取り、バリデーションと構造体マッピングを実施。
-* `init_rust_project(dir, repo_name)`: カレントディレクトリを `./{repo_name}` に切り替えて `cargo init` を発行。
+* `init_rust_project(dir, repo_name)`: 指定ディレクトリで `cargo init --vcs none` を実行し、README と `.gitignore` を作成。
 * `init_python_project(dir, repo_name)`: `pyproject.toml` やパッケージモジュール等を直接ファイル書き込みで構成。
 * `init_agent_project(dir, repo_name)`: `.github/agents/`、`.github/skills/`、`.github/loops/` に編集用サンプルを作成。
 * `setup_local_git(dir)`: `git init` 後、`git branch -m main` を実行してブランチ名を `main` に統一した上で初期コミットを作成。

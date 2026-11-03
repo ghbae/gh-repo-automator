@@ -14,7 +14,7 @@ const BASH_COMPLETION: &str = r#"_gh_repo_automator() {
         -r|--repo-name)
             local repos
             repos=$(gh repo list --limit 1000 --json name --jq '.[].name' 2>/dev/null)
-            COMPREPLY=( $(compgen -W "$repos" -- "$cur") )
+            COMPREPLY=( $(compgen -W ". $repos" -- "$cur") )
             return
             ;;
         -p|--project-type)
@@ -45,7 +45,7 @@ const ZSH_COMPLETION: &str = r#"_gh_repo_automator() {
     local -a repos
     case "${words[CURRENT-1]}" in
         -r|--repo-name)
-            repos=(${(f)"$(gh repo list --limit 1000 --json name --jq '.[].name' 2>/dev/null)"})
+            repos=(. ${(f)"$(gh repo list --limit 1000 --json name --jq '.[].name' 2>/dev/null)"})
             _describe 'repository' repos
             return
             ;;
@@ -190,6 +190,9 @@ impl Config {
             {
                 return Err("プロジェクト種別が指定されていません。(-p <rust|python|agent> または --project-type <rust|python|agent>)".into());
             }
+            if repo_name.as_deref() == Some(".") && !delete && visibility.is_none() {
+                return Err("-r . には --visibility local、private、public または --delete を指定してください。".into());
+            }
         }
 
         Ok(Config {
@@ -206,7 +209,7 @@ impl Config {
         println!("使い方: {} [オプション]", prog_name);
         println!();
         println!("オプション:");
-        println!("  -r, --repo-name <NAME>      GitHubリポジトリ / ローカルプロジェクト名 (必須)");
+        println!("  -r, --repo-name <NAME>      リポジトリ / プロジェクト名。'.' はカレントディレクトリを対象にする");
         println!(
             "  -p, --project-type <TYPE>   プロジェクト種別: rust / python / agent (作成時・local指定時に必須)"
         );
@@ -246,12 +249,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if config.delete {
-        println!("0. GitHub CLI (gh) の認証確認中...");
-        check_or_run_gh_auth()?;
         let repo_name = config
             .repo_name
             .as_deref()
             .expect("repo name is required when deleting");
+        let current_name = if repo_name == "." {
+            Some(current_github_repository(&env::current_dir()?)?)
+        } else {
+            None
+        };
+        let repo_name = current_name.as_deref().unwrap_or(repo_name);
+        println!("0. GitHub CLI (gh) の認証確認中...");
+        check_or_run_gh_auth()?;
         println!("リポジトリ削除権限 (delete_repo スコープ) を確認中...");
         ensure_delete_repo_scope()?;
         println!("GitHubリポジトリ '{}' の削除を開始します...", repo_name);
@@ -269,14 +278,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if visibility == "local" {
             // local creation continues through the shared project creation flow below.
         } else {
-            println!("0. GitHub CLI (gh) の認証確認中...");
-            check_or_run_gh_auth()?;
             let repo_name = config
                 .repo_name
                 .as_deref()
                 .expect("repo name is required when changing visibility");
+            let current_dir = env::current_dir()?;
+            if repo_name == "." {
+                if visibility == "private" {
+                    let root = git_repository_root(&current_dir)?;
+                    match github_origin_url(&root)? {
+                        Some(url) => {
+                            let name = parse_github_repository(&url)?;
+                            println!("0. GitHub CLI (gh) の認証確認中...");
+                            check_or_run_gh_auth()?;
+                            println!("GitHubリポジトリ '{}' を非公開に変更します...", name);
+                            change_repo_visibility(&name, visibility)?;
+                            println!("GitHubリポジトリ '{}' を非公開に変更しました。", name);
+                        }
+                        None => {
+                            let name = directory_name(&root)?;
+                            println!("0. GitHub CLI (gh) の認証確認中...");
+                            check_or_run_gh_auth()?;
+                            println!(
+                                "GitHubリポジトリ '{}' を非公開で作成してプッシュします...",
+                                name
+                            );
+                            create_and_push_github(&root, &name, true)?;
+                            println!(
+                                "GitHubリポジトリ '{}' を非公開で作成し、プッシュしました。",
+                                name
+                            );
+                        }
+                    }
+                } else {
+                    let name = current_github_repository(&current_dir)?;
+                    println!("0. GitHub CLI (gh) の認証確認中...");
+                    check_or_run_gh_auth()?;
+                    println!("GitHubリポジトリ '{}' を公開に変更します...", name);
+                    change_repo_visibility(&name, visibility)?;
+                    println!("GitHubリポジトリ '{}' を公開に変更しました。", name);
+                }
+                return Ok(());
+            }
+            println!("0. GitHub CLI (gh) の認証確認中...");
+            check_or_run_gh_auth()?;
             if visibility == "private" {
-                let current_dir = env::current_dir()?;
                 match github_origin_url(&current_dir)? {
                     Some(remote_url) => {
                         println!(
@@ -329,25 +375,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         check_or_run_gh_auth()?;
     }
 
-    let repo_name = config
+    let requested_name = config
         .repo_name
         .as_deref()
         .expect("repo name is required when creating");
 
     // 1. プロジェクトディレクトリの作成
-    let local_dir = PathBuf::from(repo_name);
-    if local_dir.exists() {
-        return Err(format!(
-            "カレントディレクトリに '{}' ディレクトリが既に存在します。",
-            repo_name
-        )
-        .into());
-    }
-    fs::create_dir_all(&local_dir)?;
-    println!(
-        "1. プロジェクトディレクトリを作成しました: {}",
-        local_dir.display()
-    );
+    let (local_dir, resolved_name) = if requested_name == "." {
+        let dir = env::current_dir()?;
+        let name = directory_name(&dir)?;
+        check_current_directory_for_init(
+            &dir,
+            &name,
+            config
+                .project_type
+                .as_ref()
+                .expect("project type is required"),
+        )?;
+        println!("1. カレントディレクトリを使用します: {}", dir.display());
+        (dir, name)
+    } else {
+        let dir = PathBuf::from(requested_name);
+        if dir.exists() {
+            return Err(format!(
+                "カレントディレクトリに '{}' ディレクトリが既に存在します。",
+                requested_name
+            )
+            .into());
+        }
+        fs::create_dir_all(&dir)?;
+        println!(
+            "1. プロジェクトディレクトリを作成しました: {}",
+            dir.display()
+        );
+        (dir, requested_name.to_string())
+    };
+    let repo_name = resolved_name.as_str();
 
     // 2. テンプレート展開
     match config.project_type {
@@ -444,9 +507,10 @@ fn init_rust_project(dir: &Path, repo_name: &str) -> Result<(), Box<dyn std::err
     }
 
     OpenOptions::new()
+        .create(true)
         .append(true)
         .open(dir.join(".gitignore"))?
-        .write_all(b"Cargo.lock\n")?;
+        .write_all(b"/target\nCargo.lock\n")?;
 
     let readme = format!(
         "# {}\n\nA Rust project generated by gh-repo-automator.\n",
@@ -575,6 +639,112 @@ fn setup_local_git(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn directory_name(dir: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let name = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or("ディレクトリ名をリポジトリ名として取得できません。")?;
+    Ok(name.to_string())
+}
+
+fn git_repository_root(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "Gitリポジトリのルートを取得できません: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let root = String::from_utf8(output.stdout)?;
+    Ok(PathBuf::from(root.trim_end_matches(['\n', '\r'])))
+}
+
+fn parse_github_repository(url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let path = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| url.strip_prefix("git://github.com/"))
+        .or_else(|| url.strip_prefix("git@github.com:"))
+        .ok_or("origin のURLから github.com のリポジトリを特定できません。")?;
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, repo) = path
+        .split_once('/')
+        .ok_or("origin のURLに OWNER/REPO が含まれていません。")?;
+    if owner.is_empty()
+        || repo.is_empty()
+        || matches!(repo, "." | "..")
+        || !owner
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        || !repo
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
+    {
+        return Err("origin のURLに有効な OWNER/REPO が含まれていません。".into());
+    }
+    Ok(format!("{owner}/{repo}"))
+}
+
+fn current_github_repository(dir: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let root = git_repository_root(dir)?;
+    let url = github_origin_url(&root)?
+        .ok_or("origin が設定されていません。GitHubリポジトリを特定できません。")?;
+    parse_github_repository(&url)
+}
+
+fn check_current_directory_for_init(
+    dir: &Path,
+    name: &str,
+    project_type: &ProjectType,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match fs::symlink_metadata(dir.join(".git")) {
+        Ok(_) => return Err("カレントディレクトリには既に .git が存在します。".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let output = Command::new("git")
+        .current_dir(dir)
+        .env("LC_ALL", "C")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()?;
+    if output.status.success() {
+        return Err("カレントディレクトリは既にGitリポジトリ内にあります。".into());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.contains("not a git repository") {
+        return Err(format!("Gitリポジトリの確認に失敗しました: {}", stderr.trim()).into());
+    }
+
+    let mut paths = vec![PathBuf::from("README.md")];
+    match project_type {
+        ProjectType::Rust => paths.extend([
+            PathBuf::from("Cargo.toml"),
+            PathBuf::from("src"),
+            PathBuf::from(".gitignore"),
+        ]),
+        ProjectType::Python => paths.extend([
+            PathBuf::from("pyproject.toml"),
+            PathBuf::from(".gitignore"),
+            PathBuf::from(name.replace('-', "_")),
+        ]),
+        ProjectType::Agent => paths.push(PathBuf::from(".github")),
+    }
+    for path in paths {
+        match fs::symlink_metadata(dir.join(&path)) {
+            Ok(_) => return Err(format!("既存の '{}' は上書きできません。", path.display()).into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 fn github_origin_url(dir: &Path) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let git_status = Command::new("git")
         .current_dir(dir)
@@ -582,7 +752,7 @@ fn github_origin_url(dir: &Path) -> Result<Option<String>, Box<dyn std::error::E
         .output()?;
     if !git_status.status.success() {
         return Err(format!(
-            "'{}' はGitリポジトリではありません。先に --visibility local で初期化してください。",
+            "'{}' はGitリポジトリではありません。先に -r . -p <TYPE> -v local で初期化してください。",
             dir.display()
         )
         .into());
@@ -858,7 +1028,7 @@ fn run_cmd(dir: &Path, prog: &str, args: &[&str]) -> Result<(), Box<dyn std::err
 
 #[cfg(test)]
 mod tests {
-    use super::{init_agent_project, is_github_remote_url};
+    use super::{init_agent_project, is_github_remote_url, parse_github_repository};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -897,5 +1067,24 @@ mod tests {
         assert!(!is_github_remote_url(
             "https://gitlab.com/example/example-repository.git"
         ));
+    }
+
+    #[test]
+    fn resolves_github_origin_without_trusting_path_or_userinfo() {
+        for url in [
+            "https://github.com/owner/repo.git",
+            "ssh://git@github.com/owner/repo.git",
+            "git@github.com:owner/repo.git",
+        ] {
+            assert_eq!(parse_github_repository(url).unwrap(), "owner/repo");
+        }
+        for url in [
+            "https://example.com/github.com/owner/repo",
+            "https://github.com@evil.example/owner/repo",
+            "git@github.com:owner/repo/extra",
+            "git@github.com:owner/..",
+        ] {
+            assert!(parse_github_repository(url).is_err());
+        }
     }
 }
