@@ -18,6 +18,7 @@
 - オプションで GitHub リポジトリを削除（`gh` の確認プロンプトを表示。ローカルのファイルは削除しません）
 - オプションで GitHub リポジトリの一覧を表示（Private / Public を判別）
 - オプションで既存 GitHub リポジトリの公開/非公開（可視性）を変更
+- GitHub リポジトリの説明を作成時に設定、または既存リポジトリで変更
 
 ---
 
@@ -74,6 +75,7 @@ cargo build --release
 | `-d`, `--delete` | 任意 | - | 指定した GitHub リポジトリを削除（`--repo-name` は必須。プロジェクト種別は不要） |
 | `-l`, `--list` | 任意 | - | GitHub リポジトリの一覧を表示（Private / Public を判別。他のオプションは不要） |
 | `-v`, `--visibility <VIS>` | 任意 | - | `public`: 既存GitHubリポジトリを公開化。`private`: GitHubリモートがあれば非公開化、なければ非公開GitHubリポジトリを作成してプッシュ（いずれも `--repo-name` は必須）。`local`: 指定名のローカルプロジェクト・Gitリポジトリを作成 |
+| `--description <TEXT>` | 任意 | - | GitHubリポジトリの説明を設定・変更（`--repo-name` は必須）。空文字で既存の説明を削除 |
 | `--completion <SHELL>` | 任意 | - | シェル補完スクリプトを出力（`bash` / `zsh`） |
 | `-h`, `--help` | 任意 | - | ヘルプメッセージの表示 |
 
@@ -166,6 +168,24 @@ gh-repo-automator -r OWNER/my-rust-app -v private
 ```
 
 `-v private` はカレントディレクトリがローカルGitリポジトリであることを確認します。`origin` がGitHubを指していれば既存リポジトリを非公開化し、`origin` がなければ `gh repo create --private --source=. --remote=origin --push` でリポジトリを作成・プッシュします。`origin` がGitHub以外を指す場合は既存リモートを変更せずエラーになります。`OWNER/` を省略した場合は、認証中の GitHub ユーザーのリポジトリとして自動補完されます。なお、公開リポジトリを非公開に変更すると、スター数とウォッチャーは失われます。
+
+#### GitHubリポジトリの説明を設定・変更
+
+```bash
+# 既存のGitHubリポジトリの説明を変更
+gh-repo-automator -r OWNER/REPO --description "リポジトリの説明"
+
+# カレントリポジトリのoriginを対象に変更（空文字で説明を削除）
+gh-repo-automator -r . --description ""
+
+# GitHubリポジトリの作成時に設定
+gh-repo-automator -r my-app -p python --description "Pythonアプリ"
+
+# ローカルリポジトリのアップロード、または可視性変更と同時に設定
+gh-repo-automator -r . -v private --description "非公開プロジェクト"
+```
+
+`--description` は GitHub の About に表示される説明を変更します。`-r .` で既存の説明を変更する場合は、GitHubを指す `origin` が必要です。`-v public` / `-v private` と併用した場合は可視性と説明を同時に変更します（`-v private` で `origin` がない場合は、作成時に説明を設定します）。`--list`、`--delete`、`-v local` とは併用できません。オプション名と同じ文字列や `--` で始まる説明は `--description=<TEXT>` の形式で指定してください。
 
 #### ローカルプロジェクト・Gitリポジトリの作成
 
@@ -276,10 +296,10 @@ source <(gh-repo-automator --completion zsh)
 * `init_python_project(dir, repo_name)`: `pyproject.toml` やパッケージモジュール等を直接ファイル書き込みで構成。
 * `init_agent_project(dir, repo_name)`: `.github/agents/`、`.github/skills/`、`.github/loops/` に編集用サンプルを作成。
 * `setup_local_git(dir)`: `git init` 後、`git branch -m main` を実行してブランチ名を `main` に統一した上で初期コミットを作成。
-* `create_and_push_github(dir, repo_name, is_private)`: `gh repo create` の `--source` と `--push` フラグを組み合わせてリモート反映を一括実行。
+* `create_and_push_github(dir, repo_name, is_private, description)`: `gh repo create` の `--source` と `--push` フラグを組み合わせてリモート反映を一括実行。説明が指定された場合は作成時に設定。
 * `list_github_repos()`: `gh repo list --json nameWithOwner,visibility` で一覧を取得し、Private / Public / Internal を判別して整形表示。
 * `github_origin_url(dir)`: カレントディレクトリがGitリポジトリであることを確認し、`origin` がGitHubを指す場合はそのURLを返す。`origin` がなければ `None` を返し、GitHub以外を指す場合は安全のためエラーにする。
-* `change_repo_visibility(repo_name, visibility)`: `gh repo edit <OWNER/REPO> --visibility <public|private>` で既存リポジトリの可視性を変更。`OWNER` 省略時は `current_gh_login()`（`gh api user`）で認証中ユーザー名を補完。
+* `change_repo_settings(repo_name, visibility, description)`: `gh repo edit` で既存リポジトリの可視性や説明を変更。`OWNER` 省略時は `current_gh_login()`（`gh api user`）で認証中ユーザー名を補完。
 * `ensure_delete_repo_scope()`: `gh auth status` の `Token scopes:` を確認し、`delete_repo` スコープがなければ `gh auth refresh -h github.com -s delete_repo` を対話実行して追加。
 * `delete_github_repo(repo_name)`: `gh repo delete` でリポジトリを削除。`OWNER` 省略時は `current_gh_login()` で認証中ユーザー名を補完し、解決済みの `OWNER/REPO` を返す。
 * `verify_repo_deleted(full_name)`: 削除後に `gh repo view` を実行し、リポジトリが実際に削除されたことを検証。まだ存在する場合はエラーを返す。

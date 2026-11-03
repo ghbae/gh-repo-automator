@@ -81,8 +81,11 @@ fn fake_gh(dir: &Path) -> PathBuf {
     fs::write(
         &gh,
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GH_TEST_LOG\"\n\
+         if [ \"$1 $2\" = 'repo edit' ] || [ \"$1 $2\" = 'repo create' ]; then printf 'argument: <%s>\\n' \"$@\" >> \"$GH_TEST_LOG\"; fi\n\
          if [ \"$1 $2\" = 'repo create' ]; then printf 'create cwd: %s\\n' \"$PWD\" >> \"$GH_TEST_LOG\"; fi\n\
          if [ \"$1 $2\" = 'auth status' ]; then echo 'Token scopes: delete_repo'; fi\n\
+         if [ \"$1 $2\" = 'api user' ]; then echo 'test-owner'; fi\n\
+         if [ \"$1 $2\" = 'repo edit' ] && [ -f \"$GH_TEST_LOG.fail-edit\" ]; then echo 'edit failed' >&2; exit 1; fi\n\
          if [ \"$1 $2\" = 'repo view' ]; then echo 'HTTP 404' >&2; exit 1; fi\n\
          exit 0\n",
     )
@@ -289,5 +292,173 @@ fn dot_rejects_non_github_or_missing_origin_for_existing_operations() {
     )
     .status
     .success());
+    assert!(!log.exists());
+}
+
+#[test]
+fn description_edits_named_and_current_repositories_and_clears_text() {
+    let temp = TestDir::new();
+    let bin = fake_gh(temp.path());
+    let log = temp.path().join("gh.log");
+    let project = temp.path().join("project");
+    fs::create_dir(&project).unwrap();
+    git(&project, &["init"]);
+    git(
+        &project,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/origin-owner/origin-repo.git",
+        ],
+    );
+    for args in [
+        &["-r", "OWNER/REPO", "--description", "説明 with spaces"][..],
+        &["-r", "repo", "--description", "named"][..],
+        &["-r", ".", "--description", ""][..],
+        &["-r", ".", "--description=--delete"][..],
+        &[
+            "-r",
+            ".",
+            "-v",
+            "public",
+            "--description",
+            "public description",
+        ][..],
+        &[
+            "-r",
+            ".",
+            "-v",
+            "private",
+            "--description",
+            "private description",
+        ][..],
+    ] {
+        assert_success(&cli(&project, args, Some(&bin), Some(&log)));
+    }
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(calls.contains("repo edit OWNER/REPO --description 説明 with spaces"));
+    assert!(calls.contains("argument: <説明 with spaces>"));
+    assert!(calls.contains("repo edit test-owner/repo --description named"));
+    assert!(calls.contains("repo edit origin-owner/origin-repo --description "));
+    assert!(calls.contains("argument: <>"));
+    assert!(calls.contains("argument: <--delete>"));
+    assert!(calls.contains(
+        "repo edit origin-owner/origin-repo --visibility public --description public description"
+    ));
+    assert!(calls.contains(
+        "repo edit origin-owner/origin-repo --visibility private --description private description"
+    ));
+    assert!(!calls.contains("repo create"));
+
+    fs::write(temp.path().join("gh.log.fail-edit"), "").unwrap();
+    let failed = cli(
+        &project,
+        &["-r", ".", "--description", "failed"],
+        Some(&bin),
+        Some(&log),
+    );
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("edit failed"));
+}
+
+#[test]
+fn description_is_passed_during_new_repository_creation_and_upload() {
+    let temp = TestDir::new();
+    let bin = fake_gh(temp.path());
+    let log = temp.path().join("gh.log");
+    assert_success(&cli(
+        temp.path(),
+        &[
+            "-r",
+            "new-app",
+            "-p",
+            "python",
+            "--private",
+            "false",
+            "--description",
+            "new description",
+        ],
+        Some(&bin),
+        Some(&log),
+    ));
+    let project = temp.path().join("local-app");
+    fs::create_dir(&project).unwrap();
+    git(&project, &["init"]);
+    git(&project, &["commit", "--allow-empty", "-m", "initial"]);
+    assert_success(&cli(
+        &project,
+        &[
+            "-r",
+            ".",
+            "-v",
+            "private",
+            "--description",
+            "upload description",
+        ],
+        Some(&bin),
+        Some(&log),
+    ));
+    let calls = fs::read_to_string(log).unwrap();
+    assert!(calls.contains("repo create new-app --public --source=. --remote=origin --push --description new description"));
+    assert!(calls.contains("repo create local-app --private --source=. --remote=origin --push --description upload description"));
+    assert!(calls.contains("argument: <new description>"));
+    assert!(calls.contains("argument: <upload description>"));
+}
+
+#[test]
+fn description_rejects_invalid_combinations_without_github_calls() {
+    let temp = TestDir::new();
+    let bin = fake_gh(temp.path());
+    let log = temp.path().join("gh.log");
+    for args in [
+        &["-r", "repo", "--description"][..],
+        &["-r", "repo", "--description", "--delete"][..],
+        &["-r", "repo", "--description", "--unknown"][..],
+        &["-r", "repo", "--description", "text", "--delete"][..],
+        &["--list", "--description", "text"][..],
+        &[
+            "-r",
+            "repo",
+            "-p",
+            "python",
+            "-v",
+            "local",
+            "--description",
+            "text",
+        ][..],
+        &[
+            "-r",
+            "repo",
+            "-p",
+            "python",
+            "-v",
+            "public",
+            "--description",
+            "text",
+        ][..],
+        &["--description", "text"][..],
+    ] {
+        let output = cli(temp.path(), args, Some(&bin), Some(&log));
+        assert!(!output.status.success(), "unexpected success for {args:?}");
+    }
+    assert!(!log.exists());
+}
+
+#[test]
+fn description_requires_a_github_origin_for_dot() {
+    let temp = TestDir::new();
+    let bin = fake_gh(temp.path());
+    let log = temp.path().join("gh.log");
+    let project = temp.path().join("project");
+    fs::create_dir(&project).unwrap();
+    git(&project, &["init"]);
+    let output = cli(
+        &project,
+        &["-r", ".", "--description", "text"],
+        Some(&bin),
+        Some(&log),
+    );
+    assert!(!output.status.success());
     assert!(!log.exists());
 }

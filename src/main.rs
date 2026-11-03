@@ -29,13 +29,17 @@ const BASH_COMPLETION: &str = r#"_gh_repo_automator() {
             COMPREPLY=( $(compgen -W "true false" -- "$cur") )
             return
             ;;
+        --description)
+            COMPREPLY=()
+            return
+            ;;
         --completion)
             COMPREPLY=( $(compgen -W "bash zsh" -- "$cur") )
             return
             ;;
     esac
 
-    COMPREPLY=( $(compgen -W "-r --repo-name -p --project-type --private -d --delete -l --list -v --visibility --completion -h --help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "-r --repo-name -p --project-type --private -d --delete -l --list -v --visibility --description --completion -h --help" -- "$cur") )
 }
 complete -F _gh_repo_automator gh-repo-automator
 "#;
@@ -52,12 +56,13 @@ const ZSH_COMPLETION: &str = r#"_gh_repo_automator() {
         -p|--project-type) _values 'type' rust python agent; return ;;
         -v|--visibility) _values 'visibility' public private local; return ;;
         --private) _values 'bool' true false; return ;;
+        --description) return ;;
         --completion) _values 'shell' bash zsh; return ;;
     esac
     _values 'option' \
         '-r' '--repo-name' '-p' '--project-type' '--private' \
         '-d' '--delete' '-l' '--list' '-v' '--visibility' \
-        '--completion' '-h' '--help'
+        '--description' '--completion' '-h' '--help'
 }
 compdef _gh_repo_automator gh-repo-automator
 "#;
@@ -77,6 +82,7 @@ struct Config {
     delete: bool,
     list: bool,
     visibility: Option<String>,
+    description: Option<String>,
 }
 
 impl Config {
@@ -89,6 +95,7 @@ impl Config {
         let mut delete = false;
         let mut list = false;
         let mut visibility = None;
+        let mut description = None;
 
         let mut i = 1;
         while i < args.len() {
@@ -132,6 +139,16 @@ impl Config {
                 }
                 "-d" | "--delete" => delete = true,
                 "-l" | "--list" => list = true,
+                "--description" => {
+                    i += 1;
+                    if i >= args.len()
+                        || args[i].starts_with("--")
+                        || matches!(args[i].as_str(), "-r" | "-p" | "-d" | "-l" | "-v" | "-h")
+                    {
+                        return Err("--description の値が指定されていません。オプションと同じ文字列は --description=<TEXT> で指定してください。".into());
+                    }
+                    description = Some(args[i].clone());
+                }
                 "--completion" => {
                     i += 1;
                     if i < args.len() {
@@ -172,9 +189,21 @@ impl Config {
                     Self::print_help(&args[0]);
                     std::process::exit(0);
                 }
+                value if value.starts_with("--description=") => {
+                    description = Some(value["--description=".len()..].to_string());
+                }
                 unknown => return Err(format!("不明なオプションです: {}", unknown)),
             }
             i += 1;
+        }
+
+        if description.is_some() {
+            if list || delete || visibility.as_deref() == Some("local") {
+                return Err("--description は --list、--delete、または --visibility local と併用できません。".into());
+            }
+            if project_type.is_some() && visibility.is_some() {
+                return Err("--description と --project-type を指定する新規作成では --visibility を指定できません。".into());
+            }
         }
 
         if !list {
@@ -187,11 +216,16 @@ impl Config {
             if !delete
                 && !matches!(visibility.as_deref(), Some("public" | "private"))
                 && project_type.is_none()
+                && description.is_none()
             {
                 return Err("プロジェクト種別が指定されていません。(-p <rust|python|agent> または --project-type <rust|python|agent>)".into());
             }
-            if repo_name.as_deref() == Some(".") && !delete && visibility.is_none() {
-                return Err("-r . には --visibility local、private、public または --delete を指定してください。".into());
+            if repo_name.as_deref() == Some(".")
+                && !delete
+                && visibility.is_none()
+                && (description.is_none() || project_type.is_some())
+            {
+                return Err("-r . には --visibility local、private、public、--description または --delete を指定してください。".into());
             }
         }
 
@@ -202,6 +236,7 @@ impl Config {
             delete,
             list,
             visibility,
+            description,
         })
     }
 
@@ -224,6 +259,9 @@ impl Config {
         );
         println!(
             "  -v, --visibility <VIS>      public: GitHubリポジトリを公開化、private: GitHubリモートがなければ作成してプッシュ、local: 指定名のローカルプロジェクトを作成"
+        );
+        println!(
+            "      --description <TEXT>    GitHubリポジトリの説明を設定・変更（空文字で削除）"
         );
         println!("      --completion <SHELL>    シェル補完スクリプトを出力する: bash / zsh");
         println!("  -h, --help                  ヘルプの表示");
@@ -274,6 +312,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if config.description.is_some() && config.visibility.is_none() && config.project_type.is_none()
+    {
+        let requested_name = config
+            .repo_name
+            .as_deref()
+            .expect("repo name is required when changing description");
+        let current_name = if requested_name == "." {
+            Some(current_github_repository(&env::current_dir()?)?)
+        } else {
+            None
+        };
+        let repo_name = current_name.as_deref().unwrap_or(requested_name);
+        println!("0. GitHub CLI (gh) の認証確認中...");
+        check_or_run_gh_auth()?;
+        change_repo_settings(repo_name, None, config.description.as_deref())?;
+        println!("GitHubリポジトリ '{}' の説明を変更しました。", repo_name);
+        return Ok(());
+    }
+
     if let Some(visibility) = &config.visibility {
         if visibility == "local" {
             // local creation continues through the shared project creation flow below.
@@ -292,7 +349,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("0. GitHub CLI (gh) の認証確認中...");
                             check_or_run_gh_auth()?;
                             println!("GitHubリポジトリ '{}' を非公開に変更します...", name);
-                            change_repo_visibility(&name, visibility)?;
+                            change_repo_settings(
+                                &name,
+                                Some(visibility),
+                                config.description.as_deref(),
+                            )?;
                             println!("GitHubリポジトリ '{}' を非公開に変更しました。", name);
                         }
                         None => {
@@ -303,7 +364,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "GitHubリポジトリ '{}' を非公開で作成してプッシュします...",
                                 name
                             );
-                            create_and_push_github(&root, &name, true)?;
+                            create_and_push_github(
+                                &root,
+                                &name,
+                                true,
+                                config.description.as_deref(),
+                            )?;
                             println!(
                                 "GitHubリポジトリ '{}' を非公開で作成し、プッシュしました。",
                                 name
@@ -315,7 +381,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("0. GitHub CLI (gh) の認証確認中...");
                     check_or_run_gh_auth()?;
                     println!("GitHubリポジトリ '{}' を公開に変更します...", name);
-                    change_repo_visibility(&name, visibility)?;
+                    change_repo_settings(&name, Some(visibility), config.description.as_deref())?;
                     println!("GitHubリポジトリ '{}' を公開に変更しました。", name);
                 }
                 return Ok(());
@@ -329,7 +395,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "GitHubリモート '{}' を検出しました。リポジトリ '{}' を非公開に変更します...",
                         remote_url, repo_name
                     );
-                        change_repo_visibility(repo_name, visibility)?;
+                        change_repo_settings(
+                            repo_name,
+                            Some(visibility),
+                            config.description.as_deref(),
+                        )?;
                         println!(
                             "GitHubリポジトリ '{}' を非公開 (Private) に変更しました。",
                             repo_name
@@ -340,7 +410,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "GitHubリモートがありません。GitHubリポジトリ '{}' を非公開で作成してプッシュします...",
                         repo_name
                     );
-                        create_and_push_github(&current_dir, repo_name, true)?;
+                        create_and_push_github(
+                            &current_dir,
+                            repo_name,
+                            true,
+                            config.description.as_deref(),
+                        )?;
                         println!(
                             "GitHubリポジトリ '{}' を非公開 (Private) で作成し、プッシュしました。",
                             repo_name
@@ -354,7 +429,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "GitHubリポジトリ '{}' の可視性を '{}' に変更します...",
                 repo_name, visibility
             );
-            change_repo_visibility(repo_name, visibility)?;
+            change_repo_settings(repo_name, Some(visibility), config.description.as_deref())?;
             println!(
                 "GitHubリポジトリ '{}' を {} に変更しました。",
                 repo_name,
@@ -444,7 +519,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "4. GitHubリポジトリ '{}' を作成してプッシュ中...",
         repo_name
     );
-    create_and_push_github(&local_dir, repo_name, config.private)?;
+    create_and_push_github(
+        &local_dir,
+        repo_name,
+        config.private,
+        config.description.as_deref(),
+    )?;
 
     println!("\nすべて完了しました。");
     println!("- ローカル: {}", local_dir.canonicalize()?.display());
@@ -802,22 +882,23 @@ fn create_and_push_github(
     dir: &Path,
     repo_name: &str,
     is_private: bool,
+    description: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let visibility_flag = if is_private { "--private" } else { "--public" };
 
-    run_cmd(
-        dir,
-        "gh",
-        &[
-            "repo",
-            "create",
-            repo_name,
-            visibility_flag,
-            "--source=.",
-            "--remote=origin",
-            "--push",
-        ],
-    )?;
+    let mut args = vec![
+        "repo",
+        "create",
+        repo_name,
+        visibility_flag,
+        "--source=.",
+        "--remote=origin",
+        "--push",
+    ];
+    if let Some(description) = description {
+        args.extend(["--description", description]);
+    }
+    run_cmd(dir, "gh", &args)?;
 
     Ok(())
 }
@@ -914,12 +995,13 @@ fn ensure_delete_repo_scope() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// gh repo edit で既存リポジトリの可視性 (public/private) を変更する
-fn change_repo_visibility(
+/// gh repo edit で既存リポジトリの可視性と説明を変更する
+fn change_repo_settings(
     repo_name: &str,
-    visibility: &str,
+    visibility: Option<&str>,
+    description: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if visibility == "private" {
+    if visibility == Some("private") {
         println!("   注意: 非公開化するとスター数とウォッチャーは失われます。");
     }
 
@@ -931,18 +1013,26 @@ fn change_repo_visibility(
         format!("{}/{}", owner, repo_name)
     };
 
-    let output = Command::new("gh")
-        .args(["repo", "edit", &full_name, "--visibility", visibility])
-        .output()?;
+    let mut args = vec!["repo", "edit", &full_name];
+    if let Some(visibility) = visibility {
+        args.extend(["--visibility", visibility]);
+    }
+    if let Some(description) = description {
+        args.extend(["--description", description]);
+    }
+    let output = Command::new("gh").args(&args).output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
-            "リポジトリ '{}' の可視性変更に失敗しました: {}",
+            "リポジトリ '{}' の設定変更に失敗しました: {}",
             full_name,
             stderr.trim()
         )
         .into());
+    }
+    if visibility.is_some() && description.is_some() {
+        println!("GitHubリポジトリ '{}' の説明も変更しました。", full_name);
     }
     Ok(())
 }
