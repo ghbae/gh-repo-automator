@@ -74,6 +74,7 @@ cargo build --release
 | `-d`, `--delete` | 任意 | - | 指定した GitHub リポジトリを削除（`--repo-name` は必須。プロジェクト種別は不要） |
 | `-l`, `--list` | 任意 | - | GitHub リポジトリの一覧を表示（Private / Public を判別。他のオプションは不要） |
 | `-v`, `--visibility <VIS>` | 任意 | - | 既存リポジトリの可視性を変更（`public` / `private`。`--repo-name` は必須） |
+| `--completion <SHELL>` | 任意 | - | シェル補完スクリプトを出力（`bash` / `zsh`） |
 | `-h`, `--help` | 任意 | - | ヘルプメッセージの表示 |
 
 ### 実行例
@@ -130,7 +131,7 @@ gh-repo-automator --delete --repo-name my-rust-app
 gh-repo-automator --delete --repo-name OWNER/REPO
 ```
 
-`OWNER/` を省略した場合は、認証中（`gh` ログイン中）の GitHub ユーザーのリポジトリとして自動補完されます。削除前に GitHub CLI の確認プロンプトが表示されます。GitHub 上のリポジトリのみを削除し、同名のローカルディレクトリはそのまま残します。
+`OWNER/` を省略した場合は、認証中（`gh` ログイン中）の GitHub ユーザーのリポジトリとして自動補完されます。削除前に GitHub CLI の確認プロンプトが表示されます（**リポジトリ名を `OWNER/REPO` の完全一致で入力**する必要があります）。削除実行後はリポジトリが実際に消えたことを `gh repo view` で検証し、まだ存在する場合はエラーを報告します。GitHub 上のリポジトリのみを削除し、同名のローカルディレクトリはそのまま残します。
 
 トークンに削除権限（`delete_repo` スコープ）がない場合は、自動的に `gh auth refresh -h github.com -s delete_repo` を起動してスコープを追加してから削除を実行します。
 
@@ -162,6 +163,20 @@ gh-repo-automator -r OWNER/my-rust-app -v private
 ```
 
 `OWNER/` を省略した場合は、認証中の GitHub ユーザーのリポジトリとして自動補完されます。なお、公開リポジトリを非公開に変更すると、スター数とウォッチャーは失われます。
+
+#### TAB 補完の有効化
+
+シェル設定ファイルに以下を追加すると、オプション名とリポジトリ名を TAB で補完できます。
+
+```bash
+# bash の場合 (~/.bashrc)
+source <(gh-repo-automator --completion bash)
+
+# zsh の場合 (~/.zshrc)
+source <(gh-repo-automator --completion zsh)
+```
+
+`-r` / `--repo-name` の後では、`gh repo list` から取得した自分のリポジトリ名が動的に補完されます。`-p`（`rust` / `python` / `agent`）、`-v`（`public` / `private`）、`--private`（`true` / `false`）の値も補完対象です。
 
 ---
 
@@ -226,7 +241,8 @@ gh-repo-automator -r OWNER/my-rust-app -v private
 * `list_github_repos()`: `gh repo list --json nameWithOwner,visibility` で一覧を取得し、Private / Public / Internal を判別して整形表示。
 * `change_repo_visibility(repo_name, visibility)`: `gh repo edit <OWNER/REPO> --visibility <public|private>` で既存リポジトリの可視性を変更。`OWNER` 省略時は `current_gh_login()`（`gh api user`）で認証中ユーザー名を補完。
 * `ensure_delete_repo_scope()`: `gh auth status` の `Token scopes:` を確認し、`delete_repo` スコープがなければ `gh auth refresh -h github.com -s delete_repo` を対話実行して追加。
-* `delete_github_repo(repo_name)`: `gh repo delete` でリポジトリを削除。`OWNER` 省略時は `current_gh_login()` で認証中ユーザー名を補完。
+* `delete_github_repo(repo_name)`: `gh repo delete` でリポジトリを削除。`OWNER` 省略時は `current_gh_login()` で認証中ユーザー名を補完し、解決済みの `OWNER/REPO` を返す。
+* `verify_repo_deleted(full_name)`: 削除後に `gh repo view` を実行し、リポジトリが実際に削除されたことを検証。まだ存在する場合はエラーを返す。
 
 ---
 

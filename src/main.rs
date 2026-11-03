@@ -4,6 +4,64 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// bash 用補完スクリプト (-r の後は gh repo list からリポジトリ名を動的補完)
+const BASH_COMPLETION: &str = r#"_gh_repo_automator() {
+    local cur prev
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    case "$prev" in
+        -r|--repo-name)
+            local repos
+            repos=$(gh repo list --limit 1000 --json name --jq '.[].name' 2>/dev/null)
+            COMPREPLY=( $(compgen -W "$repos" -- "$cur") )
+            return
+            ;;
+        -p|--project-type)
+            COMPREPLY=( $(compgen -W "rust python agent" -- "$cur") )
+            return
+            ;;
+        -v|--visibility)
+            COMPREPLY=( $(compgen -W "public private" -- "$cur") )
+            return
+            ;;
+        --private)
+            COMPREPLY=( $(compgen -W "true false" -- "$cur") )
+            return
+            ;;
+        --completion)
+            COMPREPLY=( $(compgen -W "bash zsh" -- "$cur") )
+            return
+            ;;
+    esac
+
+    COMPREPLY=( $(compgen -W "-r --repo-name -p --project-type --private -d --delete -l --list -v --visibility --completion -h --help" -- "$cur") )
+}
+complete -F _gh_repo_automator gh-repo-automator
+"#;
+
+/// zsh 用補完スクリプト
+const ZSH_COMPLETION: &str = r#"_gh_repo_automator() {
+    local -a repos
+    case "${words[CURRENT-1]}" in
+        -r|--repo-name)
+            repos=(${(f)"$(gh repo list --limit 1000 --json name --jq '.[].name' 2>/dev/null)"})
+            _describe 'repository' repos
+            return
+            ;;
+        -p|--project-type) _values 'type' rust python agent; return ;;
+        -v|--visibility) _values 'visibility' public private; return ;;
+        --private) _values 'bool' true false; return ;;
+        --completion) _values 'shell' bash zsh; return ;;
+    esac
+    _values 'option' \
+        '-r' '--repo-name' '-p' '--project-type' '--private' \
+        '-d' '--delete' '-l' '--list' '-v' '--visibility' \
+        '--completion' '-h' '--help'
+}
+compdef _gh_repo_automator gh-repo-automator
+"#;
+
 #[derive(Debug)]
 enum ProjectType {
     Rust,
@@ -70,6 +128,24 @@ impl Config {
                 }
                 "-d" | "--delete" => delete = true,
                 "-l" | "--list" => list = true,
+                "--completion" => {
+                    i += 1;
+                    if i < args.len() {
+                        match args[i].to_lowercase().as_str() {
+                            "bash" => {
+                                print!("{}", BASH_COMPLETION);
+                                std::process::exit(0);
+                            }
+                            "zsh" => {
+                                print!("{}", ZSH_COMPLETION);
+                                std::process::exit(0);
+                            }
+                            other => return Err(format!("不正なシェル '{}' です。(bash または zsh を指定してください)", other)),
+                        }
+                    } else {
+                        return Err("--completion の値が指定されていません。(bash または zsh)".into());
+                    }
+                }
                 "-v" | "--visibility" => {
                     i += 1;
                     if i < args.len() {
@@ -129,6 +205,9 @@ impl Config {
         println!(
             "  -v, --visibility <VIS>      既存リポジトリの可視性を変更する: public / private (--repo-name と併用)"
         );
+        println!(
+            "      --completion <SHELL>    シェル補完スクリプトを出力する: bash / zsh"
+        );
         println!("  -h, --help                  ヘルプの表示");
     }
 }
@@ -161,8 +240,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "GitHubリポジトリ '{}' の削除を開始します...",
             repo_name
         );
-        delete_github_repo(repo_name)?;
-        println!("GitHubリポジトリ '{}' を削除しました。", repo_name);
+        let full_name = delete_github_repo(repo_name)?;
+        println!("削除結果を確認中...");
+        verify_repo_deleted(&full_name)?;
+        println!(
+            "GitHubリポジトリ '{}' を削除しました。(削除済みであることを確認)",
+            full_name
+        );
         return Ok(());
     }
 
@@ -419,7 +503,8 @@ fn create_and_push_github(
     Ok(())
 }
 
-fn delete_github_repo(repo_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// gh repo delete でリポジトリを削除し、解決済みの OWNER/REPO 名を返す
+fn delete_github_repo(repo_name: &str) -> Result<String, Box<dyn std::error::Error>> {
     // OWNER 省略時は認証中ユーザーのリポジトリとして補完する
     let full_name = if repo_name.contains('/') {
         repo_name.to_string()
@@ -438,9 +523,41 @@ fn delete_github_repo(repo_name: &str) -> Result<(), Box<dyn std::error::Error>>
         .status()?;
 
     if !status.success() {
-        return Err(format!("GitHubリポジトリ '{}' の削除に失敗しました。", full_name).into());
+        return Err(format!(
+            "GitHubリポジトリ '{}' の削除に失敗しました。(確認プロンプトには '{}' と完全一致で入力してください)",
+            full_name, full_name
+        )
+        .into());
     }
-    Ok(())
+    Ok(full_name)
+}
+
+/// gh repo view でリポジトリが削除済みであることを検証する
+fn verify_repo_deleted(full_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new("gh")
+        .args(["repo", "view", full_name, "--json", "name"])
+        .output()?;
+
+    if output.status.success() {
+        return Err(format!(
+            "リポジトリ '{}' がまだ存在します。削除は完了していません。",
+            full_name
+        )
+        .into());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("Could not resolve") || stderr.contains("HTTP 404") {
+        // リポジトリが見つからない = 削除成功
+        Ok(())
+    } else {
+        Err(format!(
+            "リポジトリ '{}' の削除確認に失敗しました: {}",
+            full_name,
+            stderr.trim()
+        )
+        .into())
+    }
 }
 
 /// トークンに delete_repo スコープがあるか確認し、なければ gh auth refresh で追加する

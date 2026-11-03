@@ -26,3 +26,7 @@ case ":${PATH:-}:" in
         printf 'export PATH="%s:$PATH"\n' "$bin_dir"
         ;;
 esac
+
+printf '\nTAB補完を有効にするには、シェル設定に次の行を追加してください:\n'
+printf '  bash (~/.bashrc): source <(gh-repo-automator --completion bash)\n'
+printf '  zsh  (~/.zshrc):  source <(gh-repo-automator --completion zsh)\n'
