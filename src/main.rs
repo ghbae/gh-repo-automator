@@ -155,6 +155,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if config.delete {
         let repo_name = config.repo_name.as_deref().expect("repo name is required when deleting");
+        println!("リポジトリ削除権限 (delete_repo スコープ) を確認中...");
+        ensure_delete_repo_scope()?;
         println!(
             "GitHubリポジトリ '{}' の削除を開始します...",
             repo_name
@@ -418,17 +420,62 @@ fn create_and_push_github(
 }
 
 fn delete_github_repo(repo_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // OWNER 省略時は認証中ユーザーのリポジトリとして補完する
+    let full_name = if repo_name.contains('/') {
+        repo_name.to_string()
+    } else {
+        let owner = current_gh_login()?;
+        let resolved = format!("{}/{}", owner, repo_name);
+        println!("   -> 削除対象を '{}' に解決しました。", resolved);
+        resolved
+    };
+
     let status = Command::new("gh")
-        .args(["repo", "delete", repo_name])
+        .args(["repo", "delete", &full_name])
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()?;
 
     if !status.success() {
-        return Err(format!("GitHubリポジトリ '{}' の削除に失敗しました。", repo_name).into());
+        return Err(format!("GitHubリポジトリ '{}' の削除に失敗しました。", full_name).into());
     }
     Ok(())
+}
+
+/// トークンに delete_repo スコープがあるか確認し、なければ gh auth refresh で追加する
+fn ensure_delete_repo_scope() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new("gh").args(["auth", "status"]).output()?;
+    let status_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let has_scope = status_text
+        .lines()
+        .filter(|line| line.contains("Token scopes:"))
+        .any(|line| line.contains("delete_repo"));
+
+    if has_scope {
+        println!("   -> delete_repo スコープ確認済みです。");
+        return Ok(());
+    }
+
+    println!("   -> delete_repo スコープがありません。gh auth refresh でスコープを追加します...");
+    let refresh_status = Command::new("gh")
+        .args(["auth", "refresh", "-h", "github.com", "-s", "delete_repo"])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+
+    if refresh_status.success() {
+        println!("   -> delete_repo スコープを追加しました。処理を続行します。");
+        Ok(())
+    } else {
+        Err("delete_repo スコープの追加が完了しませんでした。".into())
+    }
 }
 
 /// gh repo edit で既存リポジトリの可視性 (public/private) を変更する
