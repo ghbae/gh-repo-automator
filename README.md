@@ -68,12 +68,12 @@ cargo build --release
 
 | オプション | 必須 | デフォルト値 | 説明 |
 | --- | --- | --- | --- |
-| `-r`, `--repo-name <NAME>` | 作成・削除時に必須 | - | GitHub 上のリポジトリ名およびローカルのプロジェクトフォルダ名 |
-| `-p`, `--project-type <TYPE>` | 作成時に必須 | - | プロジェクト種別 (`rust`、`python`、`agent`) |
+| `-r`, `--repo-name <NAME>` | 作成・削除時に必須 | - | GitHub 上のリポジトリ名およびローカルのプロジェクトフォルダ名。`local` 指定時にも必須 |
+| `-p`, `--project-type <TYPE>` | 作成時に必須 | - | プロジェクト種別 (`rust`、`python`、`agent`)。`local` 指定時にも必須 |
 | `--private <BOOL>` | 任意（作成時のみ） | `true` | プライベートリポジトリにするか (`true` / `false`) |
 | `-d`, `--delete` | 任意 | - | 指定した GitHub リポジトリを削除（`--repo-name` は必須。プロジェクト種別は不要） |
 | `-l`, `--list` | 任意 | - | GitHub リポジトリの一覧を表示（Private / Public を判別。他のオプションは不要） |
-| `-v`, `--visibility <VIS>` | 任意 | - | `public`: 既存GitHubリポジトリを公開化。`private`: GitHubリモートがあれば非公開化、なければ非公開GitHubリポジトリを作成してプッシュ（いずれも `--repo-name` は必須）。`local`: カレントディレクトリをローカルGitリポジトリとして初期化 |
+| `-v`, `--visibility <VIS>` | 任意 | - | `public`: 既存GitHubリポジトリを公開化。`private`: GitHubリモートがあれば非公開化、なければ非公開GitHubリポジトリを作成してプッシュ（いずれも `--repo-name` は必須）。`local`: 指定名のローカルプロジェクト・Gitリポジトリを作成 |
 | `--completion <SHELL>` | 任意 | - | シェル補完スクリプトを出力（`bash` / `zsh`） |
 | `-h`, `--help` | 任意 | - | ヘルプメッセージの表示 |
 
@@ -167,13 +167,20 @@ gh-repo-automator -r OWNER/my-rust-app -v private
 
 `-v private` はカレントディレクトリがローカルGitリポジトリであることを確認します。`origin` がGitHubを指していれば既存リポジトリを非公開化し、`origin` がなければ `gh repo create --private --source=. --remote=origin --push` でリポジトリを作成・プッシュします。`origin` がGitHub以外を指す場合は既存リモートを変更せずエラーになります。`OWNER/` を省略した場合は、認証中の GitHub ユーザーのリポジトリとして自動補完されます。なお、公開リポジトリを非公開に変更すると、スター数とウォッチャーは失われます。
 
-#### カレントディレクトリをローカルGitリポジトリとして初期化
+#### ローカルプロジェクト・Gitリポジトリの作成
 
 ```bash
-gh-repo-automator --visibility local
+gh-repo-automator --repo-name my-local-app --project-type rust --visibility local
 ```
 
-GitHub CLI の認証、GitHub リポジトリの作成、リモートへのプッシュは行いません。カレントディレクトリで `git init` を実行し、ブランチ名を `main` に設定した後、全ファイルを追加して `feat: initial commit` の初期コミットを作成します。空のディレクトリでも初期コミットを作成できます。既に `.git` が存在するディレクトリでは、既存リポジトリを変更しないようエラーになります。
+`--repo-name` で指定した名前のフォルダをカレントディレクトリ配下に作成し、`--project-type` に応じたテンプレートを配置します。そのフォルダ内で `git init` を実行し、ブランチ名を `main` に設定した後、全ファイルを追加して `feat: initial commit` の初期コミットを作成します。GitHub CLI の認証、GitHub リポジトリの作成、リモートへのプッシュは行いません。
+
+作成後、フォルダへ移動してGitHubへ非公開リポジトリとしてアップロードできます。
+
+```bash
+cd my-local-app
+gh-repo-automator --repo-name my-private-app --visibility private
+```
 
 #### TAB 補完の有効化
 
@@ -250,7 +257,6 @@ source <(gh-repo-automator --completion zsh)
 * `setup_local_git(dir)`: `git init` 後、`git branch -m main` を実行してブランチ名を `main` に統一した上で初期コミットを作成。
 * `create_and_push_github(dir, repo_name, is_private)`: `gh repo create` の `--source` と `--push` フラグを組み合わせてリモート反映を一括実行。
 * `list_github_repos()`: `gh repo list --json nameWithOwner,visibility` で一覧を取得し、Private / Public / Internal を判別して整形表示。
-* `init_current_directory_git(dir)`: `--visibility local` 指定時に、既存の `.git` がないことを確認してカレントディレクトリを初期化し、`main` ブランチの初期コミットを作成。
 * `github_origin_url(dir)`: カレントディレクトリがGitリポジトリであることを確認し、`origin` がGitHubを指す場合はそのURLを返す。`origin` がなければ `None` を返し、GitHub以外を指す場合は安全のためエラーにする。
 * `change_repo_visibility(repo_name, visibility)`: `gh repo edit <OWNER/REPO> --visibility <public|private>` で既存リポジトリの可視性を変更。`OWNER` 省略時は `current_gh_login()`（`gh api user`）で認証中ユーザー名を補完。
 * `ensure_delete_repo_scope()`: `gh auth status` の `Token scopes:` を確認し、`delete_repo` スコープがなければ `gh auth refresh -h github.com -s delete_repo` を対話実行して追加。

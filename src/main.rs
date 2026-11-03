@@ -177,14 +177,17 @@ impl Config {
             i += 1;
         }
 
-        if !list && visibility.as_deref() != Some("local") {
+        if !list {
             if repo_name.is_none() {
                 return Err(
                     "リポジトリ名が指定されていません。(-r <NAME> または --repo-name <NAME>)"
                         .into(),
                 );
             }
-            if !delete && visibility.is_none() && project_type.is_none() {
+            if !delete
+                && !matches!(visibility.as_deref(), Some("public" | "private"))
+                && project_type.is_none()
+            {
                 return Err("プロジェクト種別が指定されていません。(-p <rust|python|agent> または --project-type <rust|python|agent>)".into());
             }
         }
@@ -203,9 +206,9 @@ impl Config {
         println!("使い方: {} [オプション]", prog_name);
         println!();
         println!("オプション:");
-        println!("  -r, --repo-name <NAME>      GitHubリポジトリ / プロジェクト名 (必須)");
+        println!("  -r, --repo-name <NAME>      GitHubリポジトリ / ローカルプロジェクト名 (必須)");
         println!(
-            "  -p, --project-type <TYPE>   プロジェクト種別: rust / python / agent (作成時に必須)"
+            "  -p, --project-type <TYPE>   プロジェクト種別: rust / python / agent (作成時・local指定時に必須)"
         );
         println!(
             "      --private <BOOL>        プライベートリポジトリにするか (作成時のデフォルト: true)"
@@ -217,7 +220,7 @@ impl Config {
             "  -l, --list                  GitHubリポジトリの一覧を表示する (Private/Public判別付き)"
         );
         println!(
-            "  -v, --visibility <VIS>      public: GitHubリポジトリを公開化、private: GitHubリモートがなければ作成してプッシュ、local: カレントディレクトリをGit初期化"
+            "  -v, --visibility <VIS>      public: GitHubリポジトリを公開化、private: GitHubリモートがなければ作成してプッシュ、local: 指定名のローカルプロジェクトを作成"
         );
         println!("      --completion <SHELL>    シェル補完スクリプトを出力する: bash / zsh");
         println!("  -h, --help                  ヘルプの表示");
@@ -264,71 +267,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(visibility) = &config.visibility {
         if visibility == "local" {
-            let current_dir = env::current_dir()?;
-            println!(
-                "カレントディレクトリをローカルGitリポジトリとして初期化中: {}",
-                current_dir.display()
-            );
-            init_current_directory_git(&current_dir)?;
-            println!("ローカルGitリポジトリを作成し、main ブランチに初期コミットを作成しました。");
-            return Ok(());
-        }
-
-        println!("0. GitHub CLI (gh) の認証確認中...");
-        check_or_run_gh_auth()?;
-        let repo_name = config
-            .repo_name
-            .as_deref()
-            .expect("repo name is required when changing visibility");
-        if visibility == "private" {
-            let current_dir = env::current_dir()?;
-            match github_origin_url(&current_dir)? {
-                Some(remote_url) => {
-                    println!(
+            // local creation continues through the shared project creation flow below.
+        } else {
+            println!("0. GitHub CLI (gh) の認証確認中...");
+            check_or_run_gh_auth()?;
+            let repo_name = config
+                .repo_name
+                .as_deref()
+                .expect("repo name is required when changing visibility");
+            if visibility == "private" {
+                let current_dir = env::current_dir()?;
+                match github_origin_url(&current_dir)? {
+                    Some(remote_url) => {
+                        println!(
                         "GitHubリモート '{}' を検出しました。リポジトリ '{}' を非公開に変更します...",
                         remote_url, repo_name
                     );
-                    change_repo_visibility(repo_name, visibility)?;
-                    println!(
-                        "GitHubリポジトリ '{}' を非公開 (Private) に変更しました。",
-                        repo_name
-                    );
-                }
-                None => {
-                    println!(
+                        change_repo_visibility(repo_name, visibility)?;
+                        println!(
+                            "GitHubリポジトリ '{}' を非公開 (Private) に変更しました。",
+                            repo_name
+                        );
+                    }
+                    None => {
+                        println!(
                         "GitHubリモートがありません。GitHubリポジトリ '{}' を非公開で作成してプッシュします...",
                         repo_name
                     );
-                    create_and_push_github(&current_dir, repo_name, true)?;
-                    println!(
-                        "GitHubリポジトリ '{}' を非公開 (Private) で作成し、プッシュしました。",
-                        repo_name
-                    );
+                        create_and_push_github(&current_dir, repo_name, true)?;
+                        println!(
+                            "GitHubリポジトリ '{}' を非公開 (Private) で作成し、プッシュしました。",
+                            repo_name
+                        );
+                    }
                 }
+                return Ok(());
             }
+
+            println!(
+                "GitHubリポジトリ '{}' の可視性を '{}' に変更します...",
+                repo_name, visibility
+            );
+            change_repo_visibility(repo_name, visibility)?;
+            println!(
+                "GitHubリポジトリ '{}' を {} に変更しました。",
+                repo_name,
+                if visibility == "private" {
+                    "非公開 (Private)"
+                } else {
+                    "公開 (Public)"
+                }
+            );
             return Ok(());
         }
-
-        println!(
-            "GitHubリポジトリ '{}' の可視性を '{}' に変更します...",
-            repo_name, visibility
-        );
-        change_repo_visibility(repo_name, visibility)?;
-        println!(
-            "GitHubリポジトリ '{}' を {} に変更しました。",
-            repo_name,
-            if visibility == "private" {
-                "非公開 (Private)"
-            } else {
-                "公開 (Public)"
-            }
-        );
-        return Ok(());
     }
 
-    // 0. GitHub CLI (gh) の認証状態を確認（未認証ならその場でログイン実行）
-    println!("0. GitHub CLI (gh) の認証確認中...");
-    check_or_run_gh_auth()?;
+    let is_local_creation = config.visibility.as_deref() == Some("local");
+    if !is_local_creation {
+        // 0. GitHub CLI (gh) の認証状態を確認（未認証ならその場でログイン実行）
+        println!("0. GitHub CLI (gh) の認証確認中...");
+        check_or_run_gh_auth()?;
+    }
 
     let repo_name = config
         .repo_name
@@ -370,6 +369,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. ローカルGit初期化・ブランチ名 main 化・初期コミット
     println!("3. ローカルGitの初期化と初期コミット (mainブランチ)...");
     setup_local_git(&local_dir)?;
+
+    if is_local_creation {
+        println!("\nローカルGitリポジトリの作成が完了しました。");
+        println!("- ローカル: {}", local_dir.canonicalize()?.display());
+        return Ok(());
+    }
 
     // 4. GitHubリポジトリ作成・プッシュ
     println!(
@@ -431,7 +436,7 @@ fn check_or_run_gh_auth() -> Result<(), Box<dyn std::error::Error>> {
 fn init_rust_project(dir: &Path, repo_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let status = Command::new("cargo")
         .current_dir(dir)
-        .args(["init", "--name", repo_name])
+        .args(["init", "--vcs", "none", "--name", repo_name])
         .status()?;
 
     if !status.success() {
@@ -568,18 +573,6 @@ fn setup_local_git(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
         &["commit", "--allow-empty", "-m", "feat: initial commit"],
     )?;
     Ok(())
-}
-
-fn init_current_directory_git(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    if dir.join(".git").exists() {
-        return Err(format!(
-            "'{}' は既にGitリポジトリです。既存のリポジトリは初期化できません。",
-            dir.display()
-        )
-        .into());
-    }
-
-    setup_local_git(dir)
 }
 
 fn github_origin_url(dir: &Path) -> Result<Option<String>, Box<dyn std::error::Error>> {
